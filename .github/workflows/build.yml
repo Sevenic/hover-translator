@@ -27,7 +27,7 @@ jobs:
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --windowed --name "HoverTranslator" transhover.py
+        pyinstaller --onefile --windowed --add-data "local_dict.csv;." --name "HoverTranslator" transhover.py
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
