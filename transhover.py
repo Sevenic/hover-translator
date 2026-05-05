@@ -28,17 +28,16 @@ DISPLAY_DURATION = 3.0
 MAX_TEXT_LENGTH = 500
 CACHE_SIZE = 500
 LOCAL_DICT_FILE = "local_dict.csv"
-LOG_FILE = "translator.log"      # 日志文件
+LOG_FILE = "translator.log"
 # --------------------------------
 
-# 全局日志记录
 def log(msg):
     try:
         with open(LOG_FILE, 'a', encoding='utf-8') as f:
             f.write(f"{time.strftime('%H:%M:%S')} - {msg}\n")
     except:
         pass
-    print(msg)  # 同时打印到控制台（如果可见）
+    print(msg)
 
 class FloatingTranslator:
     def __init__(self):
@@ -53,10 +52,8 @@ class FloatingTranslator:
         self.translation_cache = {}
         self.local_dict = {}
 
-        # 记录启动信息
         log("程序启动中...")
 
-        # DPI 感知
         if sys.platform == 'win32':
             try:
                 ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -64,13 +61,10 @@ class FloatingTranslator:
             except Exception as e:
                 log(f"DPI 设置失败: {e}")
 
-        # 加载词典（路径修正）
         self.local_dict = self._load_local_dict()
         log(f"本地词典加载完成，共 {len(self.local_dict)} 条")
 
     def _load_local_dict(self):
-        """加载内嵌词典，正确适配 PyInstaller 单文件模式"""
-        # 关键修复：使用 sys._MEIPASS 获取打包后的临时解压目录
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
         else:
@@ -101,15 +95,15 @@ class FloatingTranslator:
         self.mouse_listener.start()
         log("鼠标监听已启动")
 
-        # 启动托盘（后台线程）
         threading.Thread(target=self._run_tray, daemon=True).start()
         log("系统托盘已启动")
 
-        # 进入 tk 主循环
         self.root.mainloop()
 
     def on_click(self, x, y, button, pressed):
         if button == mouse.Button.left and not pressed:
+            # 关键修复：延迟等待系统完成选中状态，然后处理
+            time.sleep(0.1)
             try:
                 self.handle_selection(x, y)
             except Exception as e:
@@ -117,17 +111,24 @@ class FloatingTranslator:
 
     # ---------- 安全复制 ----------
     def _copy_selected_text(self):
-        if platform.system() == "Windows":
-            self._win32_ctrl_c()
-        else:
-            self._cross_platform_ctrl_c()
-        time.sleep(0.05)
-        try:
-            text = pyperclip.paste()
-            return text.strip() if isinstance(text, str) else ""
-        except Exception as e:
-            log(f"剪贴板读取失败: {e}")
-            return ""
+        """获取选中文本，增加延迟和重试"""
+        max_retries = 2
+        for attempt in range(max_retries):
+            if platform.system() == "Windows":
+                self._win32_ctrl_c()
+            else:
+                self._cross_platform_ctrl_c()
+            time.sleep(0.12)  # 给系统足够时间更新剪贴板
+            try:
+                text = pyperclip.paste()
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+            except Exception as e:
+                log(f"剪贴板读取失败: {e}")
+            # 第一次没得到内容，稍后再试
+            if attempt == 0:
+                time.sleep(0.1)
+        return ""
 
     def _win32_ctrl_c(self):
         VK_CONTROL = 0x11
@@ -172,7 +173,6 @@ class FloatingTranslator:
             translated = self.translation_cache[cache_key]
             log(f"缓存命中: {cache_key}")
         else:
-            # 本地词典优先（纯英文单词）
             if not self.contains_chinese(text) and ' ' not in text and len(text) < 50:
                 clean_word = text.lower().strip('.,!?;:\'"')
                 local_result = self.local_dict.get(clean_word)
@@ -198,11 +198,7 @@ class FloatingTranslator:
     def _online_translate(self, text):
         try:
             target = 'en' if self.contains_chinese(text) else 'zh-CN'
-            import requests
-            old_timeout = requests.models.DEFAULT_TIMEOUT
-            requests.models.DEFAULT_TIMEOUT = 5
             result = GoogleTranslator(source='auto', target=target).translate(text)
-            requests.models.DEFAULT_TIMEOUT = old_timeout
             log(f"在线翻译成功: {text} -> {result}")
             return result
         except Exception as e:
@@ -279,7 +275,6 @@ class FloatingTranslator:
             "划词翻译 (运行中)",
             menu
         )
-        # 启动后显示气泡提示
         self.tray_icon.notify("划词翻译已启动", title="HoverTranslator")
         self.tray_icon.run()
 
@@ -301,6 +296,5 @@ if __name__ == "__main__":
         app.start()
     except Exception as e:
         log(f"主程序异常: {traceback.format_exc()}")
-        # 如果连 tk 都没创建，显示一个简单消息框
         import tkinter.messagebox as msgbox
         msgbox.showerror("启动失败", f"程序启动失败，请查看 translator.log\n错误：{str(e)}")
