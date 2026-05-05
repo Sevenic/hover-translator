@@ -3,4 +3,3 @@ pyperclip
 deep-translator
 pystray
 Pillow
-requests
