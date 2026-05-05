@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw
 
 # ---------- 用户配置 ----------
 FONT_FAMILY = "微软雅黑"
-FONT_SIZE = 12                    # 加大两号
+FONT_SIZE = 18                    # 加大两号
 FONT_WEIGHT = "normal"
 BG_COLOR = "#FFFFE0"
 FG_COLOR = "#000000"
