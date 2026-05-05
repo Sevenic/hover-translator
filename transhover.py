@@ -20,27 +20,30 @@ from PIL import Image, ImageDraw
 
 # ---------- 用户配置 ----------
 FONT_FAMILY = "微软雅黑"
-FONT_SIZE = 12
+FONT_SIZE = 18                   # 字号调大
 FONT_WEIGHT = "normal"
 BG_COLOR = "#FFFFE0"
 FG_COLOR = "#000000"
 ALPHA = 0.85
-DISPLAY_DURATION = 3.0          # 初始显示时长（秒）
-LEAVE_DURATION = 1.5            # 鼠标离开浮窗后等待消失的秒数
+DISPLAY_DURATION = 3.0
+LEAVE_DURATION = 1.5
 MAX_TEXT_LENGTH = 500
 CACHE_SIZE = 500
 LOCAL_DICT_FILE = "local_dict.csv"
-LOG_FILE = "translator.txt"     # 日志文件以 .txt 保存，方便打开
+LOG_FILE = "translator.txt"
+LOG_LEVEL = 0                    # 0: 关闭日志, 1: 仅错误/关键, 2: 全部日志
 # --------------------------------
 
 INVALID_TEXTS = {"undefined", "null", "none", "true", "false", "nan", "infinity", "-infinity"}
 
-def log(msg):
-    try:
-        with open(LOG_FILE, 'a', encoding='utf-8') as f:
-            f.write(f"{time.strftime('%H:%M:%S')} - {msg}\n")
-    except:
-        pass
+def log(msg, level=2):
+    """根据 LOG_LEVEL 决定是否写入日志"""
+    if LOG_LEVEL >= level:
+        try:
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(f"{time.strftime('%H:%M:%S')} - {msg}\n")
+        except:
+            pass
 
 def is_valid_text(text: str) -> bool:
     if not text or len(text) > MAX_TEXT_LENGTH:
@@ -67,21 +70,21 @@ class FloatingTranslator:
         sys.excepthook = self.global_exception_handler
         atexit.register(self.cleanup)
 
-        log("程序启动中...")
+        log("程序启动中...", level=1)
 
         if sys.platform == 'win32':
             try:
                 ctypes.windll.shcore.SetProcessDpiAwareness(1)
-                log("DPI 感知已启用")
+                log("DPI 感知已启用", level=1)
             except Exception as e:
-                log(f"DPI 设置失败: {e}")
+                log(f"DPI 设置失败: {e}", level=1)
 
         self.local_dict = self._load_local_dict()
-        log(f"本地词典加载完成，共 {len(self.local_dict)} 条")
+        log(f"本地词典加载完成，共 {len(self.local_dict)} 条", level=1)
 
     def global_exception_handler(self, exc_type, exc_value, exc_tb):
         err_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
-        log(f"*** 未捕获异常 ***\n{err_msg}")
+        log(f"*** 未捕获异常 ***\n{err_msg}", level=1)
 
     def cleanup(self):
         try:
@@ -95,11 +98,11 @@ class FloatingTranslator:
         else:
             base_path = os.path.dirname(__file__)
         dict_path = os.path.join(base_path, LOCAL_DICT_FILE)
-        log(f"尝试加载词典: {dict_path}")
+        log(f"尝试加载词典: {dict_path}", level=2)
 
         local = {}
         if not os.path.exists(dict_path):
-            log(f"警告：词典文件不存在！")
+            log(f"警告：词典文件不存在！", level=1)
             return local
 
         try:
@@ -111,7 +114,7 @@ class FloatingTranslator:
                         if key and key not in local:
                             local[key] = row[1].strip()
         except Exception as e:
-            log(f"加载本地词典失败: {traceback.format_exc()}")
+            log(f"加载本地词典失败: {traceback.format_exc()}", level=1)
         return local
 
     def start(self):
@@ -119,23 +122,23 @@ class FloatingTranslator:
             self.mouse_listener = mouse.Listener(on_click=self.on_click)
             self.mouse_listener.daemon = True
             self.mouse_listener.start()
-            log("鼠标监听已启动")
+            log("鼠标监听已启动", level=1)
 
             threading.Thread(target=self._run_tray, daemon=True).start()
-            log("系统托盘已启动")
+            log("系统托盘已启动", level=1)
 
             self.root.mainloop()
         except Exception as e:
-            log(f"启动失败: {traceback.format_exc()}")
+            log(f"启动失败: {traceback.format_exc()}", level=1)
             sys.exit(1)
 
     def on_click(self, x, y, button, pressed):
         if button == mouse.Button.left and not pressed:
-            time.sleep(0.1)
+            time.sleep(0.08)  # 稍微缩短延迟，减轻卡顿感
             try:
                 self.handle_selection(x, y)
             except Exception as e:
-                log(f"处理选中文本时出错: {traceback.format_exc()}")
+                log(f"处理选中文本时出错: {traceback.format_exc()}", level=1)
 
     def _copy_selected_text(self):
         try:
@@ -148,7 +151,7 @@ class FloatingTranslator:
                 self._win32_ctrl_c()
             else:
                 self._cross_platform_ctrl_c()
-            time.sleep(0.12)
+            time.sleep(0.1)
             try:
                 new_clip = pyperclip.paste()
             except:
@@ -157,7 +160,7 @@ class FloatingTranslator:
             if isinstance(new_clip, str) and new_clip != old_clip and is_valid_text(new_clip):
                 return new_clip.strip()
             if attempt == 0:
-                time.sleep(0.08)
+                time.sleep(0.06)
         return ""
 
     def _win32_ctrl_c(self):
@@ -190,7 +193,7 @@ class FloatingTranslator:
         if text == self.last_text:
             return
         self.last_text = text
-        log(f"选中文本: {text}")
+        log(f"选中文本: {text}", level=2)   # 详细日志仅在 level=2 时记录
         threading.Thread(target=self.translate_and_show, args=(x, y, text), daemon=True).start()
 
     def contains_chinese(self, text: str) -> bool:
@@ -201,14 +204,14 @@ class FloatingTranslator:
             cache_key = text.strip()
             if cache_key in self.translation_cache:
                 translated = self.translation_cache[cache_key]
-                log(f"缓存命中: {cache_key}")
+                log(f"缓存命中: {cache_key}", level=2)
             else:
                 if not self.contains_chinese(text) and ' ' not in text and len(text) < 50:
                     clean_word = text.lower().strip('.,!?;:\'"')
                     local_result = self.local_dict.get(clean_word)
                     if local_result:
                         translated = local_result
-                        log(f"本地词典命中: {clean_word} -> {translated}")
+                        log(f"本地词典命中: {clean_word}", level=2)
                     else:
                         translated = self._online_translate(text)
                 else:
@@ -223,18 +226,18 @@ class FloatingTranslator:
             if translated:
                 self.root.after(0, self.show_popup, x, y, translated)
             else:
-                log("翻译结果为空")
+                log("翻译结果为空", level=1)
         except Exception as e:
-            log(f"翻译线程异常: {traceback.format_exc()}")
+            log(f"翻译线程异常: {traceback.format_exc()}", level=1)
 
     def _online_translate(self, text):
         try:
             target = 'en' if self.contains_chinese(text) else 'zh-CN'
             result = GoogleTranslator(source='auto', target=target).translate(text)
-            log(f"在线翻译成功: {text} -> {result}")
+            log(f"在线翻译成功: {text} -> {result}", level=2)
             return result
         except Exception as e:
-            log(f"在线翻译失败: {traceback.format_exc()}")
+            log(f"在线翻译失败: {traceback.format_exc()}", level=1)
             return None
 
     def show_popup(self, x, y, text):
@@ -325,10 +328,10 @@ class FloatingTranslator:
             self.tray_icon.notify("划词翻译已启动", title="HoverTranslator")
             self.tray_icon.run()
         except Exception as e:
-            log(f"托盘启动失败: {traceback.format_exc()}")
+            log(f"托盘启动失败: {traceback.format_exc()}", level=1)
 
     def quit_app(self, icon=None, item=None):
-        log("用户退出程序")
+        log("用户退出程序", level=1)
         if self.mouse_listener and self.mouse_listener.running:
             self.mouse_listener.stop()
         if self.tray_icon:
@@ -344,6 +347,6 @@ if __name__ == "__main__":
         app = FloatingTranslator()
         app.start()
     except Exception as e:
-        log(f"主程序异常: {traceback.format_exc()}")
+        log(f"主程序异常: {traceback.format_exc()}", level=1)
         import tkinter.messagebox as msgbox
         msgbox.showerror("启动失败", f"程序启动失败，请查看 translator.txt\n错误：{str(e)}")
