@@ -53,13 +53,13 @@ jobs:
         print(f'精简词典完成，共 {count} 条记录')
         "
 
-    # 打包为控制台模式（不带 --windowed），方便查看输出
+    # Windows：无控制台窗口（--windowed）
     - name: Build with PyInstaller (Windows)
       if: runner.os == 'Windows'
       run: |
-        pyinstaller --onefile --add-data "local_dict.csv;." --name "HoverTranslator" transhover.py
+        pyinstaller --onefile --windowed --add-data "local_dict.csv;." --name "HoverTranslator" transhover.py
 
-    # macOS/Linux 保持控制台模式
+    # macOS / Linux 若有需要也可加 --windowed，此处保持控制台以便调试
     - name: Build with PyInstaller (macOS/Linux)
       if: runner.os != 'Windows'
       run: |
