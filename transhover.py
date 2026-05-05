@@ -102,32 +102,38 @@ class FloatingTranslator:
 
     def on_click(self, x, y, button, pressed):
         if button == mouse.Button.left and not pressed:
-            # 关键修复：延迟等待系统完成选中状态，然后处理
             time.sleep(0.1)
             try:
                 self.handle_selection(x, y)
             except Exception as e:
                 log(f"处理选中文本时出错: {traceback.format_exc()}")
 
-    # ---------- 安全复制 ----------
+    # ---------- 安全复制（带剪贴板变化检测）----------
     def _copy_selected_text(self):
-        """获取选中文本，增加延迟和重试"""
+        """获取真正选中的文本，如果剪贴板未变化则返回空"""
+        # 备份当前剪贴板
+        try:
+            old_clip = pyperclip.paste()
+        except Exception:
+            old_clip = ""
+
         max_retries = 2
         for attempt in range(max_retries):
             if platform.system() == "Windows":
                 self._win32_ctrl_c()
             else:
                 self._cross_platform_ctrl_c()
-            time.sleep(0.12)  # 给系统足够时间更新剪贴板
+            time.sleep(0.12)
             try:
-                text = pyperclip.paste()
-                if isinstance(text, str) and text.strip():
-                    return text.strip()
+                new_clip = pyperclip.paste()
+                # 只有剪贴板内容发生变化时才认为用户选中了新文本
+                if isinstance(new_clip, str) and new_clip != old_clip and new_clip.strip():
+                    return new_clip.strip()
             except Exception as e:
                 log(f"剪贴板读取失败: {e}")
-            # 第一次没得到内容，稍后再试
             if attempt == 0:
                 time.sleep(0.1)
+
         return ""
 
     def _win32_ctrl_c(self):
