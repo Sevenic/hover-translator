@@ -1,3 +1,5 @@
 pynput
 pyperclip
 deep-translator
+pystray
+Pillow
