@@ -7,6 +7,7 @@ import sys
 import platform
 import csv
 import os
+import io
 from pynput import mouse
 import pyperclip
 from deep_translator import GoogleTranslator
@@ -17,15 +18,15 @@ from PIL import Image, ImageDraw
 
 # ---------- 用户配置 ----------
 FONT_FAMILY = "微软雅黑"
-FONT_SIZE = 18
+FONT_SIZE = 12
 FONT_WEIGHT = "normal"
 BG_COLOR = "#FFFFE0"
 FG_COLOR = "#000000"
 ALPHA = 0.85
 DISPLAY_DURATION = 3.0
 MAX_TEXT_LENGTH = 500
-CACHE_SIZE = 500                    # 在线翻译缓存条数
-LOCAL_DICT_FILE = "local_dict.csv"  # 本地词典文件（可选）
+CACHE_SIZE = 500
+LOCAL_DICT_FILE = "local_dict.csv"
 # --------------------------------
 
 class FloatingTranslator:
@@ -39,7 +40,7 @@ class FloatingTranslator:
         self.tray_icon = None
         self.last_text = ""
         self.translation_cache = {}
-        self.local_dict = self._load_local_dict()   # 加载本地词典
+        self.local_dict = self._load_local_dict()
 
         if sys.platform == 'win32':
             try:
@@ -48,8 +49,13 @@ class FloatingTranslator:
                 pass
 
     def _load_local_dict(self):
-        """加载本地词典 CSV，格式：英文,中文"""
-        dict_path = os.path.join(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__), LOCAL_DICT_FILE)
+        """加载本地词典，兼容源码运行和 PyInstaller 打包"""
+        if getattr(sys, 'frozen', False):
+            base_path = os.path.dirname(sys.executable)
+        else:
+            base_path = os.path.dirname(__file__)
+        dict_path = os.path.join(base_path, LOCAL_DICT_FILE)
+
         local = {}
         if os.path.exists(dict_path):
             try:
@@ -75,13 +81,13 @@ class FloatingTranslator:
         if button == mouse.Button.left and not pressed:
             self.handle_selection(x, y)
 
-    # ---------- 无侵入复制 ----------
+    # ---------- 安全复制（不破坏剪贴板）----------
     def _copy_selected_text(self):
         if platform.system() == "Windows":
             self._win32_ctrl_c()
         else:
             self._cross_platform_ctrl_c()
-        time.sleep(0.05)          # 缩短等待，提升响应
+        time.sleep(0.05)
         try:
             text = pyperclip.paste()
             return text.strip() if isinstance(text, str) else ""
@@ -92,10 +98,12 @@ class FloatingTranslator:
         VK_CONTROL = 0x11
         VK_C = 0x43
         KEYEVENTF_KEYUP = 0x0002
+
         ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
         ctypes.windll.user32.keybd_event(VK_C, 0, 0, 0)
         ctypes.windll.user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
         ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+
         VK_LCONTROL = 0xA2
         VK_RCONTROL = 0xA3
         ctypes.windll.user32.keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0)
@@ -117,19 +125,17 @@ class FloatingTranslator:
         if text == self.last_text:
             return
         self.last_text = text
-        # 立即在后台翻译
         threading.Thread(target=self.translate_and_show, args=(x, y, text), daemon=True).start()
 
     def contains_chinese(self, text: str) -> bool:
         return bool(re.search(r'[\u4e00-\u9fff]', text))
 
     def translate_and_show(self, x, y, text):
-        # 1. 先查在线缓存
         cache_key = text.strip()
         if cache_key in self.translation_cache:
             translated = self.translation_cache[cache_key]
         else:
-            # 2. 尝试本地词典 (仅纯英文单词，无空格且长度<50)
+            # 纯英文单词优先本地词典（无空格且长度<50）
             if not self.contains_chinese(text) and ' ' not in text and len(text) < 50:
                 local_result = self.local_dict.get(text.lower().strip('.,!?;:\'"'))
                 if local_result:
@@ -139,7 +145,6 @@ class FloatingTranslator:
             else:
                 translated = self._online_translate(text)
 
-            # 写入缓存
             if translated:
                 if len(self.translation_cache) >= CACHE_SIZE:
                     first_key = next(iter(self.translation_cache))
@@ -150,19 +155,13 @@ class FloatingTranslator:
             self.root.after(0, self.show_popup, x, y, translated)
 
     def _online_translate(self, text):
-        """在线翻译（Google，可替换为其他源）"""
         try:
             target = 'en' if self.contains_chinese(text) else 'zh-CN'
-            translator = GoogleTranslator(source='auto', target=target)
-            # 设置超时，避免长时间卡死
-            # 注意：deep-translator 内部使用 requests，可通过 session 传递 timeout
             import requests
-            session = requests.Session()
-            session.request = lambda *args, **kwargs: requests.Session.request(session, *args, **kwargs)  # 包装
-            # 简单粗暴：直接设置全局默认超时（不影响外部）
+            # 设置超时防止卡死
             old_timeout = requests.models.DEFAULT_TIMEOUT
             requests.models.DEFAULT_TIMEOUT = 5
-            result = translator.translate(text)
+            result = GoogleTranslator(source='auto', target=target).translate(text)
             requests.models.DEFAULT_TIMEOUT = old_timeout
             return result
         except Exception as e:
@@ -177,7 +176,6 @@ class FloatingTranslator:
         self.popup.attributes('-topmost', True)
         self.popup.attributes('-alpha', ALPHA)
 
-        # 使用 Text 组件，允许选择和复制
         font = (FONT_FAMILY, FONT_SIZE, FONT_WEIGHT)
         text_widget = tk.Text(
             self.popup,
@@ -187,7 +185,7 @@ class FloatingTranslator:
             padx=8,
             pady=4,
             wrap=tk.WORD,
-            width=len(text) + 4 if len(text) < 40 else 40,  # 粗略宽度
+            width=len(text) + 4 if len(text) < 40 else 40,
             height=2 if len(text) < 50 else 3,
             borderwidth=0,
             highlightthickness=0,
@@ -195,7 +193,7 @@ class FloatingTranslator:
             state=tk.NORMAL
         )
         text_widget.insert(tk.END, text)
-        text_widget.configure(state=tk.DISABLED)   # 只读
+        text_widget.configure(state=tk.DISABLED)  # 只读，但可选中
         text_widget.pack()
 
         self.popup.update_idletasks()
