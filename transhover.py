@@ -14,14 +14,15 @@ import pystray
 from PIL import Image, ImageDraw
 
 # ---------- 用户配置 ----------
-FONT_FAMILY = "微软雅黑"          # 可改为你自己系统上的字体
-FONT_SIZE = 10                    # 翻译弹窗字体大小，调大或调小随意
-FONT_WEIGHT = "normal"           # "normal" 或 "bold"
+FONT_FAMILY = "微软雅黑"
+FONT_SIZE = 12                    # 加大两号
+FONT_WEIGHT = "normal"
 BG_COLOR = "#FFFFE0"
 FG_COLOR = "#000000"
 ALPHA = 0.85
-DISPLAY_DURATION = 3.0           # 弹窗显示秒数
-MAX_TEXT_LENGTH = 500            # 超过此字数不翻译
+DISPLAY_DURATION = 3.0
+MAX_TEXT_LENGTH = 500
+CACHE_SIZE = 200                 # 缓存最近翻译条数
 # --------------------------------
 
 class FloatingTranslator:
@@ -34,8 +35,8 @@ class FloatingTranslator:
         self.mouse_listener = None
         self.tray_icon = None
 
-        # 用于去重：上次翻译的原文缓存
-        self.last_text = ""
+        self.last_text = ""                  # 去重用的上次原文
+        self.translation_cache = {}           # 翻译缓存
 
         # DPI 感知
         if sys.platform == 'win32':
@@ -56,36 +57,20 @@ class FloatingTranslator:
         if button == mouse.Button.left and not pressed:
             self.handle_selection(x, y)
 
-    # ---------- 安全复制选中文本 ----------
+    # ---------- 无侵入复制（不干扰剪贴板）----------
     def _copy_selected_text(self):
-        old_clip = ""
-        try:
-            old_clip = pyperclip.paste()
-        except Exception:
-            pass
-
+        """模拟 Ctrl+C 获取选中文本，不备份不还原，不破坏图片剪贴板"""
         if platform.system() == "Windows":
             self._win32_ctrl_c()
         else:
             self._cross_platform_ctrl_c()
 
         time.sleep(0.1)
-        text = ""
         try:
             text = pyperclip.paste()
+            return text.strip() if isinstance(text, str) else ""
         except Exception:
-            pass
-
-        # 立即还原剪贴板
-        try:
-            if old_clip is not None:
-                pyperclip.copy(old_clip)
-            else:
-                pyperclip.copy("")
-        except Exception:
-            pass
-
-        return text.strip() if text else ""
+            return ""
 
     def _win32_ctrl_c(self):
         VK_CONTROL = 0x11
@@ -97,7 +82,7 @@ class FloatingTranslator:
         ctypes.windll.user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
         ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
-        # 强制释放左右 Ctrl（部分键盘驱动区分）
+        # 释放左右 Ctrl（防键盘状态残留）
         VK_LCONTROL = 0xA2
         VK_RCONTROL = 0xA3
         ctypes.windll.user32.keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0)
@@ -111,29 +96,40 @@ class FloatingTranslator:
         kb.release('c')
         kb.release(Key.ctrl)
 
-    # ---------- 核心逻辑：去重 + 翻译 ----------
+    # ---------- 核心逻辑 ----------
     def handle_selection(self, x, y):
         text = self._copy_selected_text()
+        # 空文本、过长文本不翻译
         if not text or len(text) > MAX_TEXT_LENGTH:
             return
-
-        # 去重：与上次翻译的原文完全相同则不再次弹出
+        # 去重：与上次完全相同则忽略
         if text == self.last_text:
             return
         self.last_text = text
-
         threading.Thread(target=self.translate_and_show, args=(x, y, text), daemon=True).start()
 
     def contains_chinese(self, text: str) -> bool:
         return bool(re.search(r'[\u4e00-\u9fff]', text))
 
     def translate_and_show(self, x, y, text):
-        target_lang = 'en' if self.contains_chinese(text) else 'zh-CN'
-        try:
-            translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
-        except Exception as e:
-            print(f"翻译失败: {e}")
-            return
+        # 先查缓存
+        cache_key = text.strip()
+        if cache_key in self.translation_cache:
+            translated = self.translation_cache[cache_key]
+        else:
+            target_lang = 'en' if self.contains_chinese(text) else 'zh-CN'
+            try:
+                translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
+            except Exception as e:
+                print(f"翻译失败: {e}")
+                return
+            # 写入缓存，保持大小
+            if len(self.translation_cache) >= CACHE_SIZE:
+                # 简单的 FIFO 清理
+                first_key = next(iter(self.translation_cache))
+                del self.translation_cache[first_key]
+            self.translation_cache[cache_key] = translated
+
         if translated:
             self.root.after(0, self.show_popup, x, y, translated)
 
@@ -145,7 +141,6 @@ class FloatingTranslator:
         self.popup.attributes('-topmost', True)
         self.popup.attributes('-alpha', ALPHA)
 
-        # 使用配置的字体
         font = (FONT_FAMILY, FONT_SIZE, FONT_WEIGHT)
         label = tk.Label(
             self.popup, text=text, font=font,
