@@ -25,20 +25,18 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
 
-    # 下载完整词典并只保留 word + translation 两列
     - name: Prepare full offline dictionary
       shell: bash
       run: |
         echo "下载原始词典并精简字段..."
+        export PYTHONIOENCODING=utf-8
         python -c "
         import csv, urllib.request, io
 
         url = 'https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.csv'
         response = urllib.request.urlopen(url)
-        # 用 TextIOWrapper 避免二进制流解码问题
         reader = csv.reader(io.TextIOWrapper(response, encoding='utf-8'))
 
-        # 读取第一行获取列名
         header = next(reader)
         word_idx = header.index('word')
         translation_idx = header.index('translation')
@@ -55,13 +53,11 @@ jobs:
         print(f'精简词典完成，共 {count} 条记录')
         "
 
-    # Windows 打包（注意分号分隔 add-data）
     - name: Build with PyInstaller (Windows)
       if: runner.os == 'Windows'
       run: |
         pyinstaller --onefile --windowed --add-data "local_dict.csv;." --name "HoverTranslator" transhover.py
 
-    # macOS/Linux 打包（冒号分隔 add-data）
     - name: Build with PyInstaller (macOS/Linux)
       if: runner.os != 'Windows'
       run: |
