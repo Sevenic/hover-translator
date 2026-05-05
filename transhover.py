@@ -8,6 +8,7 @@ import platform
 import csv
 import os
 import io
+import traceback
 from pynput import mouse
 import pyperclip
 from deep_translator import GoogleTranslator
@@ -27,7 +28,17 @@ DISPLAY_DURATION = 3.0
 MAX_TEXT_LENGTH = 500
 CACHE_SIZE = 500
 LOCAL_DICT_FILE = "local_dict.csv"
+LOG_FILE = "translator.log"      # 日志文件
 # --------------------------------
+
+# 全局日志记录
+def log(msg):
+    try:
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(f"{time.strftime('%H:%M:%S')} - {msg}\n")
+    except:
+        pass
+    print(msg)  # 同时打印到控制台（如果可见）
 
 class FloatingTranslator:
     def __init__(self):
@@ -40,48 +51,71 @@ class FloatingTranslator:
         self.tray_icon = None
         self.last_text = ""
         self.translation_cache = {}
-        self.local_dict = self._load_local_dict()
+        self.local_dict = {}
 
+        # 记录启动信息
+        log("程序启动中...")
+
+        # DPI 感知
         if sys.platform == 'win32':
             try:
                 ctypes.windll.shcore.SetProcessDpiAwareness(1)
-            except Exception:
-                pass
+                log("DPI 感知已启用")
+            except Exception as e:
+                log(f"DPI 设置失败: {e}")
+
+        # 加载词典（路径修正）
+        self.local_dict = self._load_local_dict()
+        log(f"本地词典加载完成，共 {len(self.local_dict)} 条")
 
     def _load_local_dict(self):
-        """加载本地词典，兼容源码运行和 PyInstaller 打包"""
+        """加载内嵌词典，正确适配 PyInstaller 单文件模式"""
+        # 关键修复：使用 sys._MEIPASS 获取打包后的临时解压目录
         if getattr(sys, 'frozen', False):
-            base_path = os.path.dirname(sys.executable)
+            base_path = sys._MEIPASS
         else:
             base_path = os.path.dirname(__file__)
         dict_path = os.path.join(base_path, LOCAL_DICT_FILE)
+        log(f"尝试加载词典: {dict_path}")
 
         local = {}
-        if os.path.exists(dict_path):
-            try:
-                with open(dict_path, 'r', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    for row in reader:
-                        if len(row) >= 2:
-                            key = row[0].strip().lower()
-                            if key and key not in local:
-                                local[key] = row[1].strip()
-            except Exception as e:
-                print(f"加载本地词典失败: {e}")
+        if not os.path.exists(dict_path):
+            log(f"警告：词典文件不存在！")
+            return local
+
+        try:
+            with open(dict_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) >= 2:
+                        key = row[0].strip().lower()
+                        if key and key not in local:
+                            local[key] = row[1].strip()
+        except Exception as e:
+            log(f"加载本地词典失败: {traceback.format_exc()}")
         return local
 
     def start(self):
         self.mouse_listener = mouse.Listener(on_click=self.on_click)
         self.mouse_listener.daemon = True
         self.mouse_listener.start()
+        log("鼠标监听已启动")
+
+        # 启动托盘（后台线程）
         threading.Thread(target=self._run_tray, daemon=True).start()
+        log("系统托盘已启动")
+
+        # 进入 tk 主循环
         self.root.mainloop()
 
     def on_click(self, x, y, button, pressed):
         if button == mouse.Button.left and not pressed:
-            self.handle_selection(x, y)
+            try:
+                self.handle_selection(x, y)
+            except Exception as e:
+                log(f"处理选中文本时出错: {traceback.format_exc()}")
 
-    # ---------- 安全复制（不破坏剪贴板）----------
+    # ---------- 安全复制 ----------
     def _copy_selected_text(self):
         if platform.system() == "Windows":
             self._win32_ctrl_c()
@@ -91,7 +125,8 @@ class FloatingTranslator:
         try:
             text = pyperclip.paste()
             return text.strip() if isinstance(text, str) else ""
-        except Exception:
+        except Exception as e:
+            log(f"剪贴板读取失败: {e}")
             return ""
 
     def _win32_ctrl_c(self):
@@ -125,6 +160,7 @@ class FloatingTranslator:
         if text == self.last_text:
             return
         self.last_text = text
+        log(f"选中文本: {text}")
         threading.Thread(target=self.translate_and_show, args=(x, y, text), daemon=True).start()
 
     def contains_chinese(self, text: str) -> bool:
@@ -134,12 +170,15 @@ class FloatingTranslator:
         cache_key = text.strip()
         if cache_key in self.translation_cache:
             translated = self.translation_cache[cache_key]
+            log(f"缓存命中: {cache_key}")
         else:
-            # 纯英文单词优先本地词典（无空格且长度<50）
+            # 本地词典优先（纯英文单词）
             if not self.contains_chinese(text) and ' ' not in text and len(text) < 50:
-                local_result = self.local_dict.get(text.lower().strip('.,!?;:\'"'))
+                clean_word = text.lower().strip('.,!?;:\'"')
+                local_result = self.local_dict.get(clean_word)
                 if local_result:
                     translated = local_result
+                    log(f"本地词典命中: {clean_word} -> {translated}")
                 else:
                     translated = self._online_translate(text)
             else:
@@ -153,19 +192,21 @@ class FloatingTranslator:
 
         if translated:
             self.root.after(0, self.show_popup, x, y, translated)
+        else:
+            log("翻译结果为空")
 
     def _online_translate(self, text):
         try:
             target = 'en' if self.contains_chinese(text) else 'zh-CN'
             import requests
-            # 设置超时防止卡死
             old_timeout = requests.models.DEFAULT_TIMEOUT
             requests.models.DEFAULT_TIMEOUT = 5
             result = GoogleTranslator(source='auto', target=target).translate(text)
             requests.models.DEFAULT_TIMEOUT = old_timeout
+            log(f"在线翻译成功: {text} -> {result}")
             return result
         except Exception as e:
-            print(f"在线翻译失败: {e}")
+            log(f"在线翻译失败: {traceback.format_exc()}")
             return None
 
     def show_popup(self, x, y, text):
@@ -178,22 +219,14 @@ class FloatingTranslator:
 
         font = (FONT_FAMILY, FONT_SIZE, FONT_WEIGHT)
         text_widget = tk.Text(
-            self.popup,
-            font=font,
-            bg=BG_COLOR,
-            fg=FG_COLOR,
-            padx=8,
-            pady=4,
-            wrap=tk.WORD,
+            self.popup, font=font, bg=BG_COLOR, fg=FG_COLOR,
+            padx=8, pady=4, wrap=tk.WORD,
             width=len(text) + 4 if len(text) < 40 else 40,
             height=2 if len(text) < 50 else 3,
-            borderwidth=0,
-            highlightthickness=0,
-            relief='flat',
-            state=tk.NORMAL
+            borderwidth=0, highlightthickness=0, relief='flat'
         )
         text_widget.insert(tk.END, text)
-        text_widget.configure(state=tk.DISABLED)  # 只读，但可选中
+        text_widget.configure(state=tk.DISABLED)
         text_widget.pack()
 
         self.popup.update_idletasks()
@@ -218,13 +251,13 @@ class FloatingTranslator:
         if self.after_id:
             try:
                 self.popup.after_cancel(self.after_id)
-            except Exception:
+            except:
                 pass
             self.after_id = None
         if self.popup:
             try:
                 self.popup.destroy()
-            except Exception:
+            except:
                 pass
             self.popup = None
 
@@ -246,9 +279,12 @@ class FloatingTranslator:
             "划词翻译 (运行中)",
             menu
         )
+        # 启动后显示气泡提示
+        self.tray_icon.notify("划词翻译已启动", title="HoverTranslator")
         self.tray_icon.run()
 
     def quit_app(self, icon=None, item=None):
+        log("用户退出程序")
         if self.mouse_listener and self.mouse_listener.running:
             self.mouse_listener.stop()
         if self.tray_icon:
@@ -260,5 +296,11 @@ class FloatingTranslator:
 
 
 if __name__ == "__main__":
-    app = FloatingTranslator()
-    app.start()
+    try:
+        app = FloatingTranslator()
+        app.start()
+    except Exception as e:
+        log(f"主程序异常: {traceback.format_exc()}")
+        # 如果连 tk 都没创建，显示一个简单消息框
+        import tkinter.messagebox as msgbox
+        msgbox.showerror("启动失败", f"程序启动失败，请查看 translator.log\n错误：{str(e)}")
