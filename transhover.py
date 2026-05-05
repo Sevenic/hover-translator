@@ -4,119 +4,140 @@ import threading
 import tkinter as tk
 import ctypes
 import sys
-from pynput import mouse, keyboard
+import platform
+from pynput import mouse
 import pyperclip
 from deep_translator import GoogleTranslator
 
-# ---------- 配置 ----------
-FONT = ("微软雅黑", 12)          # 翻译显示字体
-BG_COLOR = "#FFFFE0"           # 浅黄背景色
-FG_COLOR = "#000000"           # 文字颜色
-ALPHA = 0.85                   # 窗口透明度
-DISPLAY_DURATION = 3.0         # 显示秒数
-# -----------------------
+# 系统托盘
+import pystray
+from PIL import Image, ImageDraw
+
+# ---------- 用户配置 ----------
+FONT_FAMILY = "微软雅黑"          # 可改为你自己系统上的字体
+FONT_SIZE = 10                    # 翻译弹窗字体大小，调大或调小随意
+FONT_WEIGHT = "normal"           # "normal" 或 "bold"
+BG_COLOR = "#FFFFE0"
+FG_COLOR = "#000000"
+ALPHA = 0.85
+DISPLAY_DURATION = 3.0           # 弹窗显示秒数
+MAX_TEXT_LENGTH = 500            # 超过此字数不翻译
+# --------------------------------
 
 class FloatingTranslator:
     def __init__(self):
-        self.popup = None
-        self.after_id = None    # 用于 after 销毁定时器
-        self.keyboard_ctrl = keyboard.Controller()
-        # 确保 Tk 仅主线程创建
         self.root = tk.Tk()
         self.root.withdraw()
 
-        # 开启 Windows DPI 感知，解决高分屏坐标偏移问题
+        self.popup = None
+        self.after_id = None
+        self.mouse_listener = None
+        self.tray_icon = None
+
+        # 用于去重：上次翻译的原文缓存
+        self.last_text = ""
+
+        # DPI 感知
         if sys.platform == 'win32':
             try:
-                ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
             except Exception:
                 pass
 
     def start(self):
-        """启动鼠标监听"""
-        listener = mouse.Listener(on_click=self.on_click)
-        listener.daemon = True
-        listener.start()
+        self.mouse_listener = mouse.Listener(on_click=self.on_click)
+        self.mouse_listener.daemon = True
+        self.mouse_listener.start()
+
+        threading.Thread(target=self._run_tray, daemon=True).start()
         self.root.mainloop()
 
     def on_click(self, x, y, button, pressed):
-        """鼠标左键释放时触发"""
         if button == mouse.Button.left and not pressed:
-            # 在主线程中尽快处理剪贴板复制与还原，翻译显示放到后台线程
             self.handle_selection(x, y)
 
-    def handle_selection(self, x, y):
-        """获取选中文本并立即还原剪贴板，然后异步翻译显示"""
-        # ---- 第一步：安全备份当前剪贴板 ----
+    # ---------- 安全复制选中文本 ----------
+    def _copy_selected_text(self):
+        old_clip = ""
         try:
             old_clip = pyperclip.paste()
         except Exception:
-            old_clip = ""
+            pass
 
-        # ---- 第二步：模拟 Ctrl+C 复制选中文本 ----
-        try:
-            self.keyboard_ctrl.press(keyboard.Key.ctrl)
-            self.keyboard_ctrl.press('c')
-            time.sleep(0.05)               # 等待复制完成
-            self.keyboard_ctrl.release('c')
-            self.keyboard_ctrl.release(keyboard.Key.ctrl)
-            time.sleep(0.05)
-        except Exception:
-            # 按键失败也要尽量还原剪贴板
-            self.safe_restore_clipboard(old_clip)
-            return
+        if platform.system() == "Windows":
+            self._win32_ctrl_c()
+        else:
+            self._cross_platform_ctrl_c()
 
-        # ---- 第三步：立即获取文本 ----
+        time.sleep(0.1)
+        text = ""
         try:
             text = pyperclip.paste()
         except Exception:
-            text = ""
+            pass
 
-        # ---- 第四步：立即还原剪贴板（最高优先级） ----
-        self.safe_restore_clipboard(old_clip)
-
-        # ---- 第五步：过滤无效文本 ----
-        if not text or len(text) > 500:
-            return
-
-        # ---- 第六步：后台线程进行翻译和显示，完全不阻塞剪贴板 ----
-        threading.Thread(target=self.translate_and_show, args=(x, y, text), daemon=True).start()
-
-    def safe_restore_clipboard(self, content):
-        """绝对安全的剪贴板还原"""
+        # 立即还原剪贴板
         try:
-            if content is not None:
-                pyperclip.copy(content)
+            if old_clip is not None:
+                pyperclip.copy(old_clip)
             else:
                 pyperclip.copy("")
         except Exception:
             pass
 
+        return text.strip() if text else ""
+
+    def _win32_ctrl_c(self):
+        VK_CONTROL = 0x11
+        VK_C = 0x43
+        KEYEVENTF_KEYUP = 0x0002
+
+        ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_C, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
+        ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+
+        # 强制释放左右 Ctrl（部分键盘驱动区分）
+        VK_LCONTROL = 0xA2
+        VK_RCONTROL = 0xA3
+        ctypes.windll.user32.keybd_event(VK_LCONTROL, 0, KEYEVENTF_KEYUP, 0)
+        ctypes.windll.user32.keybd_event(VK_RCONTROL, 0, KEYEVENTF_KEYUP, 0)
+
+    def _cross_platform_ctrl_c(self):
+        from pynput.keyboard import Controller, Key
+        kb = Controller()
+        kb.press(Key.ctrl)
+        kb.press('c')
+        kb.release('c')
+        kb.release(Key.ctrl)
+
+    # ---------- 核心逻辑：去重 + 翻译 ----------
+    def handle_selection(self, x, y):
+        text = self._copy_selected_text()
+        if not text or len(text) > MAX_TEXT_LENGTH:
+            return
+
+        # 去重：与上次翻译的原文完全相同则不再次弹出
+        if text == self.last_text:
+            return
+        self.last_text = text
+
+        threading.Thread(target=self.translate_and_show, args=(x, y, text), daemon=True).start()
+
     def contains_chinese(self, text: str) -> bool:
-        """检测文本是否包含中文汉字"""
         return bool(re.search(r'[\u4e00-\u9fff]', text))
 
     def translate_and_show(self, x, y, text):
-        """后台翻译并调主线程显示弹窗"""
-        if self.contains_chinese(text):
-            target_lang = 'en'
-        else:
-            target_lang = 'zh-CN'
-
-        translated = None
+        target_lang = 'en' if self.contains_chinese(text) else 'zh-CN'
         try:
             translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
         except Exception as e:
             print(f"翻译失败: {e}")
             return
-
         if translated:
-            # 调度到主线程显示弹窗
             self.root.after(0, self.show_popup, x, y, translated)
 
     def show_popup(self, x, y, text):
-        """在主线程中安全显示悬浮窗"""
-        # 先清理旧弹窗（包括取消旧的 after 定时器）
         self.destroy_popup()
 
         self.popup = tk.Toplevel(self.root)
@@ -124,28 +145,21 @@ class FloatingTranslator:
         self.popup.attributes('-topmost', True)
         self.popup.attributes('-alpha', ALPHA)
 
+        # 使用配置的字体
+        font = (FONT_FAMILY, FONT_SIZE, FONT_WEIGHT)
         label = tk.Label(
-            self.popup,
-            text=text,
-            font=FONT,
-            bg=BG_COLOR,
-            fg=FG_COLOR,
-            padx=8,
-            pady=4,
-            wraplength=400,
-            justify='left'
+            self.popup, text=text, font=font,
+            bg=BG_COLOR, fg=FG_COLOR,
+            padx=8, pady=4, wraplength=400, justify='left'
         )
         label.pack()
 
-        # 窗口定位：光标上方偏移（考虑 DPI 后坐标已准确）
         self.popup.update_idletasks()
         win_w = self.popup.winfo_width()
         win_h = self.popup.winfo_height()
-
         pos_x = x + 10
         pos_y = y - win_h - 20
 
-        # 屏幕边界保护
         screen_w = self.popup.winfo_screenwidth()
         screen_h = self.popup.winfo_screenheight()
         if pos_x + win_w > screen_w:
@@ -156,12 +170,9 @@ class FloatingTranslator:
             pos_y = screen_h - win_h - 5
 
         self.popup.geometry(f"+{pos_x}+{pos_y}")
-
-        # 使用 after 设置自动消失（线程安全）
         self.after_id = self.popup.after(int(DISPLAY_DURATION * 1000), self.destroy_popup)
 
     def destroy_popup(self):
-        """安全销毁悬浮窗"""
         if self.after_id:
             try:
                 self.popup.after_cancel(self.after_id)
@@ -175,7 +186,37 @@ class FloatingTranslator:
                 pass
             self.popup = None
 
+    # ---------- 系统托盘 ----------
+    def _create_image(self):
+        width, height = 16, 16
+        image = Image.new('RGB', (width, height), color='#4A90D9')
+        draw = ImageDraw.Draw(image)
+        draw.text((3, 1), "T", fill="white")
+        return image
+
+    def _run_tray(self):
+        menu = pystray.Menu(
+            pystray.MenuItem("退出", self.quit_app)
+        )
+        self.tray_icon = pystray.Icon(
+            "HoverTranslator",
+            self._create_image(),
+            "划词翻译 (运行中)",
+            menu
+        )
+        self.tray_icon.run()
+
+    def quit_app(self, icon=None, item=None):
+        if self.mouse_listener and self.mouse_listener.running:
+            self.mouse_listener.stop()
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.destroy_popup()
+        self.root.quit()
+        self.root.destroy()
+        sys.exit(0)
+
 
 if __name__ == "__main__":
-    translator = FloatingTranslator()
-    translator.start()
+    app = FloatingTranslator()
+    app.start()
