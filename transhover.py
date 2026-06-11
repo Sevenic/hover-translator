@@ -88,7 +88,6 @@ class FloatingTranslator:
         except: pass
 
     def _load_local_dict(self):
-        """修复权限拒绝漏洞：采用全绝对路径隔离与异常静默处理"""
         try:
             base_path = os.path.dirname(os.path.abspath(__file__))
         except:
@@ -97,7 +96,6 @@ class FloatingTranslator:
         dict_path = os.path.join(base_path, LOCAL_DICT_FILE)
         local = {}
         
-        # 安全创建初始化文件
         if not os.path.exists(dict_path): 
             try:
                 with open(dict_path, 'w', encoding='utf-8', newline='') as f:
@@ -108,7 +106,6 @@ class FloatingTranslator:
                 log(f"无法创建词典文件 (无写入权限): {e}")
                 return local
         
-        # 安全读取
         try:
             with open(dict_path, 'r', encoding='utf-8') as f:
                 reader = csv.reader(f)
@@ -132,15 +129,12 @@ class FloatingTranslator:
     def on_click(self, x, y, button, pressed):
         if button == mouse.Button.left:
             if pressed:
-                # 记录鼠标按下初始坐标
                 self.press_x = x
                 self.press_y = y
             else:
-                # 核心过滤 1：如果鼠标没怎么动（位移小于 6 像素），判定为单纯的点击输入框，直接熔断，不执行Ctrl+C
                 if abs(x - self.press_x) < 6 and abs(y - self.press_y) < 6:
                     return
                 
-                # 核心过滤 2：如果鼠标划词范围在当前弹窗几何体内部，判定为用户在复制中文结果，直接熔断
                 if self.popup and self.popup.winfo_exists():
                     try:
                         px = self.popup.winfo_rootx()
@@ -148,7 +142,7 @@ class FloatingTranslator:
                         pw = self.popup.winfo_width()
                         ph = self.popup.winfo_height()
                         if px <= x <= (px + pw) and py <= y <= (py + ph):
-                            return # 内部划词，直接放行不做二次翻译
+                            return 
                     except: pass
 
                 now = time.time()
@@ -177,7 +171,6 @@ class FloatingTranslator:
         return ""
 
     def _do_ctrl_c(self):
-        """Windows 底层原生流释放，非阻塞，不再干扰后台用户的正常复制粘贴"""
         if sys.platform == "win32":
             VK_CONTROL = 0x11
             VK_C = 0x43
@@ -227,7 +220,10 @@ class FloatingTranslator:
                 self.root.after(0, self.show_popup, x, y, self.translation_cache[cache_key], False)
                 return
 
-            if len(text) > 100:
+            # --- 修复核心分流逻辑 ---
+            is_long_text = len(text) > 100
+            
+            if is_long_text:
                 self.root.after(0, self.show_popup, x, y, "⏳ 正在翻译长段落，请稍候...", True)
 
             if not self.contains_chinese(text) and ' ' not in text and len(text) < 50:
@@ -241,9 +237,18 @@ class FloatingTranslator:
                 if len(self.translation_cache) >= CACHE_SIZE:
                     del self.translation_cache[next(iter(self.translation_cache))]
                 self.translation_cache[cache_key] = translated
-                self.root.after(0, self.update_popup_content, translated)
+                
+                if is_long_text:
+                    # 如果是长文（已经有Loading窗口了），则平滑更新文本
+                    self.root.after(0, self.update_popup_content, translated)
+                else:
+                    # 如果是短句（跳过了Loading），立刻直接展示带结果的新窗口
+                    self.root.after(0, self.show_popup, x, y, translated, False)
             else:
-                self.root.after(0, self.update_popup_content, "❌ 网络或翻译接口请求失败")
+                if is_long_text:
+                    self.root.after(0, self.update_popup_content, "❌ 网络或接口请求失败")
+                else:
+                    self.root.after(0, self.show_popup, x, y, "❌ 网络或接口请求失败", False)
         except Exception as e: log(f"翻译处理异常: {e}")
 
     def _online_translate(self, text):
