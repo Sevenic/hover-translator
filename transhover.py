@@ -18,17 +18,17 @@ from deep_translator import GoogleTranslator
 import pystray
 from PIL import Image, ImageDraw
 
-# ---------- Apple / Material 现代极简设计语言 ----------
+# ---------- 学术现代设计语言 ----------
 BG_COLOR = "#FFFFFF"
-FG_COLOR = "#1D1D1F"               
-BORDER_COLOR = "#D2D2D7"           
-SEL_BG_COLOR = "#B3D7FF"           
-SEL_FG_COLOR = "#000000"           
-MUTED_FG_COLOR = "#86868B"         # 加载状态的灰色
-ALPHA = 0.98                       
+FG_COLOR = "#1D1D1F"
+BORDER_COLOR = "#D2D2D7"
+SEL_BG_COLOR = "#B3D7FF"
+SEL_FG_COLOR = "#000000"
+MUTED_FG_COLOR = "#86868B"
+ALPHA = 0.98
 DISPLAY_DURATION = 5.0
-LEAVE_DURATION = 1.0               
-MAX_TEXT_LENGTH = 3500             # 专为学术长文提升字数上限
+LEAVE_DURATION = 1.0
+MAX_TEXT_LENGTH = 3500
 CACHE_SIZE = 500
 LOCAL_DICT_FILE = "local_dict.csv"
 LOG_FILE = "translator.txt"
@@ -39,7 +39,8 @@ def log(msg):
     try:
         with open(LOG_FILE, 'a', encoding='utf-8') as f:
             f.write(f"{time.strftime('%H:%M:%S')} - {msg}\n")
-    except: pass
+    except:
+        pass
 
 def is_valid_text(text: str) -> bool:
     if not text or len(text) > MAX_TEXT_LENGTH: return False
@@ -64,14 +65,14 @@ class FloatingTranslator:
         self.font_size = 14
         self.target_lang = "zh-CN"
         self.last_click_time = 0
-        self.is_pinned = False # 长文防误触锁定标记
+        self.is_pinned = False
         
         sys.excepthook = self.global_exception_handler
         atexit.register(self.cleanup)
 
         if sys.platform == 'win32':
             try: ctypes.windll.shcore.SetProcessDpiAwareness(1)
-            except Exception as e: pass
+            except: pass
         
         self.local_dict = self._load_local_dict()
 
@@ -83,41 +84,26 @@ class FloatingTranslator:
         try: self.destroy_popup()
         except: pass
 
-# ... 在类内部初始化时 ...
     def _load_local_dict(self):
-        # 优先读取同目录下的 academic_terms.csv
-        dict_path = "academic_terms.csv" 
+        """只读加载本地词典，不自动创建文件，避免权限错误"""
         local = {}
-        if not os.path.exists(dict_path): 
-            # 创建示例文件
-            with open(dict_path, 'w', encoding='utf-8') as f:
-                f.write("Deep Learning,深度学习\n")
-                f.write("Neural Network,神经网络\n")
-        
-        try:
-            with open(dict_path, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    if len(row) >= 2:
-                        local[row[0].strip().lower()] = row[1].strip()
-        except: pass
+        # 优先查找程序所在目录的 local_dict.csv（或 academic_terms.csv）
+        dict_path = os.path.join(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__), LOCAL_DICT_FILE)
+        # 也可尝试同目录下的 academic_terms.csv
+        alt_path = os.path.join(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__), "academic_terms.csv")
+        for path in [dict_path, alt_path]:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        reader = csv.reader(f)
+                        for row in reader:
+                            if len(row) >= 2:
+                                local[row[0].strip().lower()] = row[1].strip()
+                    log(f"已加载本地词典: {path}, 词条数: {len(local)}")
+                    break
+                except Exception as e:
+                    log(f"加载词典失败: {e}")
         return local
-
-# ... 在 show_popup 函数中增加点击跳转逻辑 ...
-    def _on_word_click(self, event):
-        # 检查是否按住了 Ctrl 键
-        if event.state & 0x0004:
-            try:
-                # 获取鼠标位置的单词
-                index = self.text_widget.index(f"@{event.x},{event.y}")
-                word = self.text_widget.get(f"{index} wordstart", f"{index} wordend")
-                if word.strip():
-                    import webbrowser
-                    webbrowser.open(f"https://en.wikipedia.org/wiki/{word.strip()}")
-            except: pass
-
-# ... 在 text_widget 的定义处绑定 ...
-        self.text_widget.bind("<Control-Button-1>", self._on_word_click)
 
     def start(self):
         try:
@@ -127,6 +113,7 @@ class FloatingTranslator:
             threading.Thread(target=self._run_tray, daemon=True).start()
             self.root.mainloop()
         except Exception as e:
+            log(f"启动失败: {e}")
             sys.exit(1)
 
     def on_click(self, x, y, button, pressed):
@@ -144,13 +131,11 @@ class FloatingTranslator:
     def _copy_selected_text(self):
         try: old_clip = pyperclip.paste()
         except: old_clip = ""
-            
         for attempt in range(2):
             self._do_ctrl_c()
-            time.sleep(0.1) 
+            time.sleep(0.1)
             try: new_clip = pyperclip.paste()
             except: continue
-                
             if isinstance(new_clip, str) and new_clip != old_clip and is_valid_text(new_clip):
                 return new_clip.strip()
             if attempt == 0: time.sleep(0.05)
@@ -162,39 +147,29 @@ class FloatingTranslator:
             kb.press('c')
             time.sleep(0.01)
             kb.release('c')
+        # 确保释放左右 Ctrl
         kb.release(KeyboardKey.ctrl)
         kb.release(KeyboardKey.ctrl_l)
         kb.release(KeyboardKey.ctrl_r)
 
-    # ---------- 核心：学术长文语境重构引擎 ----------
     def _smart_clean_text(self, text):
-        """修复 PDF 碎片化换行，但保留真正的文章段落"""
+        """修复 PDF 碎片化换行，保留段落结构"""
         if self.contains_chinese(text):
-            # 中文去换行
             text = re.sub(r'\s*\n\s*', '', text)
         else:
-            # 1. 修复连字符跨行 (如 applica- \n tion)
             text = re.sub(r'([a-zA-Z]+)-\s*\n\s*([a-zA-Z]+)', r'\1\2', text)
-            # 2. 保护真正的段落（连续两个换行，或句号/冒号后的换行）
             text = text.replace('\r\n', '\n')
             text = re.sub(r'(\.|\:|\?|\!)\s*\n', r'\1<PARAGRAPH_BREAK>', text)
             text = re.sub(r'\n{2,}', '<PARAGRAPH_BREAK>', text)
-            # 3. 将其余造成语境割裂的单换行替换为空格
             text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
-            # 4. 还原真实的段落换行
             text = text.replace('<PARAGRAPH_BREAK>', '\n\n')
-            
-        # 压缩多余空格
         return re.sub(r' {2,}', ' ', text).strip()
 
     def handle_selection(self, x, y):
         raw_text = self._copy_selected_text()
         if not raw_text: return
-        
-        # 使用智能清洗，确保长文翻译质量
         text = self._smart_clean_text(raw_text)
         if text == self.last_text or not text: return
-        
         self.last_text = text
         self.process_translation(x, y, text)
 
@@ -205,15 +180,12 @@ class FloatingTranslator:
         try:
             cache_key = f"{self.target_lang}_{text}"
             if cache_key in self.translation_cache:
-                # 缓存命中，秒出
                 self.root.after(0, self.show_popup, x, y, self.translation_cache[cache_key], False)
                 return
 
-            # 如果是很长的文本，先弹出 Loading 状态，防止干等
             if len(text) > 100:
                 self.root.after(0, self.show_popup, x, y, "⏳ 正在翻译长段落，请稍候...", True)
 
-            # 在后台独立进行耗时的在线请求
             if not self.contains_chinese(text) and ' ' not in text and len(text) < 50:
                 clean_word = text.lower().strip('.,!?;:\'"')
                 local_result = self.local_dict.get(clean_word)
@@ -225,11 +197,9 @@ class FloatingTranslator:
                 if len(self.translation_cache) >= CACHE_SIZE:
                     del self.translation_cache[next(iter(self.translation_cache))]
                 self.translation_cache[cache_key] = translated
-                
-                # 请求完成，更新卡片内容
                 self.root.after(0, self.update_popup_content, translated)
             else:
-                self.root.after(0, self.update_popup_content, "❌ 网络或翻译接口请求失败")
+                self.root.after(0, self.update_popup_content, "❌ 翻译失败")
         except Exception as e: log(f"翻译处理异常: {e}")
 
     def _online_translate(self, text):
@@ -240,7 +210,6 @@ class FloatingTranslator:
             log(f"在线翻译失败: {e}")
             return None
 
-    # ---------- 现代感 UI & 沉浸式阅读交互 ----------
     def show_popup(self, x, y, text, is_loading):
         self.destroy_popup()
         self.is_pinned = False
@@ -255,8 +224,7 @@ class FloatingTranslator:
         inner_frame = tk.Frame(border_frame, bg=BG_COLOR, bd=0)
         inner_frame.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
-        display_width = 65 # 为长文固定一个舒适的黄金视宽
-
+        display_width = 65
         font = (self.font_family, self.font_size, "normal")
         curr_fg = MUTED_FG_COLOR if is_loading else FG_COLOR
         
@@ -266,16 +234,15 @@ class FloatingTranslator:
                               fg=curr_fg, 
                               selectbackground=SEL_BG_COLOR,
                               selectforeground=SEL_FG_COLOR,
-                              padx=24, pady=20,      # Apple 级超大留白
+                              padx=24, pady=20,
                               wrap=tk.WORD, 
                               width=display_width, 
-                              height=2,              # 初始高度，后续动态计算
-                              spacing1=8,            # 明显的段前距
-                              spacing2=8,            # 宽松的长文行高
+                              height=2,
+                              spacing1=8,
+                              spacing2=8,
                               borderwidth=0, 
                               highlightthickness=0, 
                               relief='flat')
-        
         self.text_widget.pack(fill=tk.BOTH, expand=True)
         self._insert_and_resize(text)
         
@@ -283,32 +250,23 @@ class FloatingTranslator:
         self.text_widget.bind("<Key>", self._readonly_key_handler)
         self.text_widget.bind("<Control-a>", self._select_all)
         self.text_widget.bind("<Control-A>", self._select_all)
-        
-        # 【沉浸式阅读核心】点击文本框即刻“钉住”，鼠标移开不消失
         self.text_widget.bind("<Button-1>", self._pin_popup)
-        # 全局 Esc 极速退出
         self.popup.bind("<Escape>", lambda e: self.destroy_popup())
         self.text_widget.bind("<Escape>", lambda e: self.destroy_popup())
         
         self.popup.update_idletasks()
         win_w, win_h = self.popup.winfo_width(), self.popup.winfo_height()
-        
         pos_x, pos_y = x + 15, y + 25
         screen_w, screen_h = self.popup.winfo_screenwidth(), self.popup.winfo_screenheight()
-        
         if pos_x + win_w > screen_w: pos_x = screen_w - win_w - 10
         if pos_y + win_h > screen_h: pos_y = y - win_h - 15
-        
         self.popup.geometry(f"+{pos_x}+{pos_y}")
 
-        # 悬停倒计时逻辑
         def on_enter(event):
             if self.after_id:
                 self.popup.after_cancel(self.after_id)
                 self.after_id = None
-                
         def on_leave(event):
-            # 如果处于沉浸锁定状态，直接无视离开事件
             if self.is_pinned: return
             if self.after_id: self.popup.after_cancel(self.after_id)
             self.after_id = self.popup.after(int(LEAVE_DURATION * 1000), self.destroy_popup)
@@ -318,36 +276,29 @@ class FloatingTranslator:
         self.text_widget.bind("<Enter>", on_enter)
         self.text_widget.bind("<Leave>", on_leave)
 
-        # Loading状态给予更长初始停留
         dur = 10.0 if is_loading else DISPLAY_DURATION
         self.after_id = self.popup.after(int(dur * 1000), self.destroy_popup)
 
     def update_popup_content(self, translated_text):
-        """异步更新内容，无需闪烁重绘窗口"""
         if not self.popup or not self.text_widget: return
-        self.text_widget.config(fg=FG_COLOR) # 恢复正常的黑色字体
+        self.text_widget.config(fg=FG_COLOR)
         self._insert_and_resize(translated_text)
 
     def _insert_and_resize(self, text):
         self.text_widget.config(state=tk.NORMAL)
         self.text_widget.delete("1.0", tk.END)
         self.text_widget.insert(tk.END, text)
-        
-        # 动态计算所需行数
         lines = text.split('\n')
         total_lines = 0
         for line in lines:
             total_lines += max(1, (len(line) // (self.text_widget.cget('width') - 2)) + 1)
-            
-        # 长文限制最高 25 行（自动开启内部鼠标滚动），短文自适应
         display_height = max(2, min(total_lines, 25))
         self.text_widget.config(height=display_height)
-        self.text_widget.config(state=tk.DISABLED) # 依然是DISABLED阻止输入，但配合事件劫持
+        self.text_widget.config(state=tk.DISABLED)
 
     def _pin_popup(self, event):
-        """点击卡片即锁定，沉浸式阅读必备"""
         self.is_pinned = True
-        self.text_widget.focus_set() # 抢占焦点，确保滚轮和Esc按键生效
+        self.text_widget.focus_set()
         if self.after_id:
             self.popup.after_cancel(self.after_id)
             self.after_id = None
@@ -371,7 +322,6 @@ class FloatingTranslator:
             try: self.popup.after_cancel(self.after_id)
             except: pass
             self.after_id = None
-            
         if self.popup:
             try: self.popup.destroy()
             except: pass
