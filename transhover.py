@@ -18,19 +18,19 @@ from deep_translator import GoogleTranslator
 import pystray
 from PIL import Image, ImageDraw
 
-# ---------- 学术现代设计语言 ----------
+# ---------- Apple / Material 现代极简设计语言 ----------
 BG_COLOR = "#FFFFFF"
-FG_COLOR = "#1D1D1F"
-BORDER_COLOR = "#D2D2D7"
-SEL_BG_COLOR = "#B3D7FF"
-SEL_FG_COLOR = "#000000"
-MUTED_FG_COLOR = "#86868B"
-ALPHA = 0.98
+FG_COLOR = "#1D1D1F"               
+BORDER_COLOR = "#D2D2D7"           
+SEL_BG_COLOR = "#B3D7FF"           
+SEL_FG_COLOR = "#000000"           
+MUTED_FG_COLOR = "#86868B"         
+ALPHA = 0.98                       
 DISPLAY_DURATION = 5.0
-LEAVE_DURATION = 1.0
-MAX_TEXT_LENGTH = 3500
+LEAVE_DURATION = 1.0               
+MAX_TEXT_LENGTH = 3500             
 CACHE_SIZE = 500
-LOCAL_DICT_FILE = "local_dict.csv"
+LOCAL_DICT_FILE = "academic_terms.csv"
 LOG_FILE = "translator.txt"
 
 INVALID_TEXTS = {"undefined", "null", "none", "true", "false", "nan", "infinity", "-infinity"}
@@ -39,8 +39,7 @@ def log(msg):
     try:
         with open(LOG_FILE, 'a', encoding='utf-8') as f:
             f.write(f"{time.strftime('%H:%M:%S')} - {msg}\n")
-    except:
-        pass
+    except: pass
 
 def is_valid_text(text: str) -> bool:
     if not text or len(text) > MAX_TEXT_LENGTH: return False
@@ -61,18 +60,22 @@ class FloatingTranslator:
         self.translation_cache = {}
         self.local_dict = {}
         
+        # 物理坐标追踪（防轻点冲突）
+        self.press_x = 0
+        self.press_y = 0
+        
         self.font_family = "Microsoft YaHei UI"
         self.font_size = 14
         self.target_lang = "zh-CN"
         self.last_click_time = 0
-        self.is_pinned = False
+        self.is_pinned = False 
         
         sys.excepthook = self.global_exception_handler
         atexit.register(self.cleanup)
 
         if sys.platform == 'win32':
             try: ctypes.windll.shcore.SetProcessDpiAwareness(1)
-            except: pass
+            except Exception as e: pass
         
         self.local_dict = self._load_local_dict()
 
@@ -85,24 +88,35 @@ class FloatingTranslator:
         except: pass
 
     def _load_local_dict(self):
-        """只读加载本地词典，不自动创建文件，避免权限错误"""
+        """修复权限拒绝漏洞：采用全绝对路径隔离与异常静默处理"""
+        try:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        except:
+            base_path = os.getcwd()
+            
+        dict_path = os.path.join(base_path, LOCAL_DICT_FILE)
         local = {}
-        # 优先查找程序所在目录的 local_dict.csv（或 academic_terms.csv）
-        dict_path = os.path.join(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__), LOCAL_DICT_FILE)
-        # 也可尝试同目录下的 academic_terms.csv
-        alt_path = os.path.join(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__), "academic_terms.csv")
-        for path in [dict_path, alt_path]:
-            if os.path.exists(path):
-                try:
-                    with open(path, 'r', encoding='utf-8') as f:
-                        reader = csv.reader(f)
-                        for row in reader:
-                            if len(row) >= 2:
-                                local[row[0].strip().lower()] = row[1].strip()
-                    log(f"已加载本地词典: {path}, 词条数: {len(local)}")
-                    break
-                except Exception as e:
-                    log(f"加载词典失败: {e}")
+        
+        # 安全创建初始化文件
+        if not os.path.exists(dict_path): 
+            try:
+                with open(dict_path, 'w', encoding='utf-8', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["Deep Learning", "深度学习"])
+                    writer.writerow(["Neural Network", "神经网络"])
+            except Exception as e:
+                log(f"无法创建词典文件 (无写入权限): {e}")
+                return local
+        
+        # 安全读取
+        try:
+            with open(dict_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) >= 2:
+                        local[row[0].strip().lower()] = row[1].strip()
+        except Exception as e:
+            log(f"读取词典文件失败: {e}")
         return local
 
     def start(self):
@@ -113,15 +127,34 @@ class FloatingTranslator:
             threading.Thread(target=self._run_tray, daemon=True).start()
             self.root.mainloop()
         except Exception as e:
-            log(f"启动失败: {e}")
             sys.exit(1)
 
     def on_click(self, x, y, button, pressed):
-        if button == mouse.Button.left and not pressed:
-            now = time.time()
-            if now - self.last_click_time < 0.2: return
-            self.last_click_time = now
-            threading.Thread(target=self._async_handle_selection, args=(x, y), daemon=True).start()
+        if button == mouse.Button.left:
+            if pressed:
+                # 记录鼠标按下初始坐标
+                self.press_x = x
+                self.press_y = y
+            else:
+                # 核心过滤 1：如果鼠标没怎么动（位移小于 6 像素），判定为单纯的点击输入框，直接熔断，不执行Ctrl+C
+                if abs(x - self.press_x) < 6 and abs(y - self.press_y) < 6:
+                    return
+                
+                # 核心过滤 2：如果鼠标划词范围在当前弹窗几何体内部，判定为用户在复制中文结果，直接熔断
+                if self.popup and self.popup.winfo_exists():
+                    try:
+                        px = self.popup.winfo_rootx()
+                        py = self.popup.winfo_rooty()
+                        pw = self.popup.winfo_width()
+                        ph = self.popup.winfo_height()
+                        if px <= x <= (px + pw) and py <= y <= (py + ph):
+                            return # 内部划词，直接放行不做二次翻译
+                    except: pass
+
+                now = time.time()
+                if now - self.last_click_time < 0.2: return
+                self.last_click_time = now
+                threading.Thread(target=self._async_handle_selection, args=(x, y), daemon=True).start()
 
     def _async_handle_selection(self, x, y):
         time.sleep(0.12)
@@ -131,29 +164,38 @@ class FloatingTranslator:
     def _copy_selected_text(self):
         try: old_clip = pyperclip.paste()
         except: old_clip = ""
+            
         for attempt in range(2):
             self._do_ctrl_c()
-            time.sleep(0.1)
+            time.sleep(0.1) 
             try: new_clip = pyperclip.paste()
             except: continue
+                
             if isinstance(new_clip, str) and new_clip != old_clip and is_valid_text(new_clip):
                 return new_clip.strip()
             if attempt == 0: time.sleep(0.05)
         return ""
 
     def _do_ctrl_c(self):
-        kb = KeyboardController()
-        with kb.pressed(KeyboardKey.ctrl):
-            kb.press('c')
+        """Windows 底层原生流释放，非阻塞，不再干扰后台用户的正常复制粘贴"""
+        if sys.platform == "win32":
+            VK_CONTROL = 0x11
+            VK_C = 0x43
+            KEYEVENTF_KEYUP = 0x0002
+            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_C, 0, 0, 0)
             time.sleep(0.01)
-            kb.release('c')
-        # 确保释放左右 Ctrl
-        kb.release(KeyboardKey.ctrl)
-        kb.release(KeyboardKey.ctrl_l)
-        kb.release(KeyboardKey.ctrl_r)
+            ctypes.windll.user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
+            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+        else:
+            kb = KeyboardController()
+            with kb.pressed(KeyboardKey.ctrl):
+                kb.press('c')
+                time.sleep(0.01)
+                kb.release('c')
+            kb.release(KeyboardKey.ctrl)
 
     def _smart_clean_text(self, text):
-        """修复 PDF 碎片化换行，保留段落结构"""
         if self.contains_chinese(text):
             text = re.sub(r'\s*\n\s*', '', text)
         else:
@@ -168,8 +210,10 @@ class FloatingTranslator:
     def handle_selection(self, x, y):
         raw_text = self._copy_selected_text()
         if not raw_text: return
+        
         text = self._smart_clean_text(raw_text)
         if text == self.last_text or not text: return
+        
         self.last_text = text
         self.process_translation(x, y, text)
 
@@ -199,7 +243,7 @@ class FloatingTranslator:
                 self.translation_cache[cache_key] = translated
                 self.root.after(0, self.update_popup_content, translated)
             else:
-                self.root.after(0, self.update_popup_content, "❌ 翻译失败")
+                self.root.after(0, self.update_popup_content, "❌ 网络或翻译接口请求失败")
         except Exception as e: log(f"翻译处理异常: {e}")
 
     def _online_translate(self, text):
@@ -224,7 +268,7 @@ class FloatingTranslator:
         inner_frame = tk.Frame(border_frame, bg=BG_COLOR, bd=0)
         inner_frame.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
-        display_width = 65
+        display_width = 65 
         font = (self.font_family, self.font_size, "normal")
         curr_fg = MUTED_FG_COLOR if is_loading else FG_COLOR
         
@@ -234,38 +278,44 @@ class FloatingTranslator:
                               fg=curr_fg, 
                               selectbackground=SEL_BG_COLOR,
                               selectforeground=SEL_FG_COLOR,
-                              padx=24, pady=20,
+                              padx=24, pady=20,      
                               wrap=tk.WORD, 
                               width=display_width, 
-                              height=2,
-                              spacing1=8,
-                              spacing2=8,
+                              height=2,              
+                              spacing1=8,            
+                              spacing2=8,            
                               borderwidth=0, 
                               highlightthickness=0, 
                               relief='flat')
+        
         self.text_widget.pack(fill=tk.BOTH, expand=True)
         self._insert_and_resize(text)
         
-        # 事件绑定
         self.text_widget.bind("<Key>", self._readonly_key_handler)
         self.text_widget.bind("<Control-a>", self._select_all)
         self.text_widget.bind("<Control-A>", self._select_all)
+        self.text_widget.bind("<Control-Button-1>", self._on_word_click)
+        
         self.text_widget.bind("<Button-1>", self._pin_popup)
         self.popup.bind("<Escape>", lambda e: self.destroy_popup())
         self.text_widget.bind("<Escape>", lambda e: self.destroy_popup())
         
         self.popup.update_idletasks()
         win_w, win_h = self.popup.winfo_width(), self.popup.winfo_height()
+        
         pos_x, pos_y = x + 15, y + 25
         screen_w, screen_h = self.popup.winfo_screenwidth(), self.popup.winfo_screenheight()
+        
         if pos_x + win_w > screen_w: pos_x = screen_w - win_w - 10
         if pos_y + win_h > screen_h: pos_y = y - win_h - 15
+        
         self.popup.geometry(f"+{pos_x}+{pos_y}")
 
         def on_enter(event):
             if self.after_id:
                 self.popup.after_cancel(self.after_id)
                 self.after_id = None
+                
         def on_leave(event):
             if self.is_pinned: return
             if self.after_id: self.popup.after_cancel(self.after_id)
@@ -279,26 +329,38 @@ class FloatingTranslator:
         dur = 10.0 if is_loading else DISPLAY_DURATION
         self.after_id = self.popup.after(int(dur * 1000), self.destroy_popup)
 
+    def _on_word_click(self, event):
+        if event.state & 0x0004:
+            try:
+                index = self.text_widget.index(f"@{event.x},{event.y}")
+                word = self.text_widget.get(f"{index} wordstart", f"{index} wordend").strip()
+                if word and re.match(r'^[a-zA-Z\-]+$', word):
+                    import webbrowser
+                    webbrowser.open(f"https://en.wikipedia.org/wiki/{word}")
+            except: pass
+
     def update_popup_content(self, translated_text):
         if not self.popup or not self.text_widget: return
-        self.text_widget.config(fg=FG_COLOR)
+        self.text_widget.config(fg=FG_COLOR) 
         self._insert_and_resize(translated_text)
 
     def _insert_and_resize(self, text):
         self.text_widget.config(state=tk.NORMAL)
         self.text_widget.delete("1.0", tk.END)
         self.text_widget.insert(tk.END, text)
+        
         lines = text.split('\n')
         total_lines = 0
         for line in lines:
             total_lines += max(1, (len(line) // (self.text_widget.cget('width') - 2)) + 1)
+            
         display_height = max(2, min(total_lines, 25))
         self.text_widget.config(height=display_height)
-        self.text_widget.config(state=tk.DISABLED)
+        self.text_widget.config(state=tk.DISABLED) 
 
     def _pin_popup(self, event):
         self.is_pinned = True
-        self.text_widget.focus_set()
+        self.text_widget.focus_set() 
         if self.after_id:
             self.popup.after_cancel(self.after_id)
             self.after_id = None
@@ -322,6 +384,7 @@ class FloatingTranslator:
             try: self.popup.after_cancel(self.after_id)
             except: pass
             self.after_id = None
+            
         if self.popup:
             try: self.popup.destroy()
             except: pass
